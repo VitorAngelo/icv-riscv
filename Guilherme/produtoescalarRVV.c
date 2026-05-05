@@ -17,7 +17,6 @@ int32_t dot_product_int8(const int8_t *pointer1, const int8_t *pointer2, int com
 {
     int32_t resultado = 0;
     asm volatile(
-        "vsetvli t1, zero, e32, m1, ta, ma\n"
         "vmv.v.i v4, 0\n"                               // zera v4 (acumulador)
         "1:\n"                                          // inicia loop
         "vsetvli t0, %[comprimento], e8, m1, ta, ma\n"  // t0 = VL da iteracao
@@ -32,11 +31,10 @@ int32_t dot_product_int8(const int8_t *pointer1, const int8_t *pointer2, int com
         "add %[pointer2], %[pointer2], t0\n"            // '' '' 2
         "sub %[comprimento], %[comprimento], t0\n"      // tira comprimento processado
         "bnez %[comprimento], 1b\n"                     // volta para '1' se ainda resta
-        "vsetvli t1, zero, e32, m1, ta, ma\n"           // reconfigura e32, m1
         "vmv.x.s %[resultado], v4\n"                    // copia resultado p/ C
         : [resultado] "=r" (resultado), [pointer1] "+r" (pointer1), [pointer2] "+r" (pointer2), [comprimento] "+r" (comprimento)
         :
-        : "v0", "v1", "v4", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "t0", "t1", "memory"
+        : "v0", "v1", "v4", "v8", "v9", "v10", "v11", "v12", "v13", "v14", "v15", "t0", "memory"
     );
     return resultado;
 }
@@ -51,7 +49,6 @@ int32_t dot_product_int32(const int32_t *pointer1, const int32_t *pointer2, int 
 {
     int32_t resultado = 0;
     asm volatile(
-        "vsetvli t1, zero, e32, m1, ta, ma\n"
         "vmv.v.i v4, 0\n"                               // zera v4 (acumulador)
         "1:\n"                                          // inicia loop
         "vsetvli t0, %[comprimento], e32, m1, ta, ma\n" // t0 = VL da iteracao
@@ -59,7 +56,7 @@ int32_t dot_product_int32(const int32_t *pointer1, const int32_t *pointer2, int 
         "vle32.v v1, (%[pointer2])\n"                   // '' '' pointer2 '' v1
         "vmul.vv v2, v0, v1\n"                          // v2[i] = v0[i] * v1[i]
         "vredsum.vs v4, v2, v4\n"                       // v4[0] += sum(v2[i])
-        "slli t1, t0, 2\n"                              // t1 = t0 * 4 avança
+        "slli t1, t0, 2\n"                              // t1 = t0 * 4 (byte offset)
         "add %[pointer1], %[pointer1], t1\n"            // avanca ponteiro 1
         "add %[pointer2], %[pointer2], t1\n"            // '' '' 2
         "sub %[comprimento], %[comprimento], t0\n"      // tira comprimento processado
@@ -82,7 +79,6 @@ float dot_product_float32(const float *pointer1, const float *pointer2, int comp
 {
     float resultado = 0.0f;
     asm volatile(
-        "vsetvli t1, zero, e32, m1, ta, ma\n"
         "vmv.v.i v4, 0\n"                               // zera v4 
         "1:\n"                                          // inicia loop
         "vsetvli t0, %[comprimento], e32, m1, ta, ma\n" // t0 = VL da iteracao
@@ -90,7 +86,7 @@ float dot_product_float32(const float *pointer1, const float *pointer2, int comp
         "vle32.v v1, (%[pointer2])\n"                   // '' '' pointer2 '' v1
         "vfmul.vv v2, v0, v1\n"                         // v2[i] = v0[i] * v1[i]
         "vfredusum.vs v4, v2, v4\n"                     // v4[0] += sum(v2[i])
-        "slli t1, t0, 2\n"                              // t1 = t0 * 4 avança
+        "slli t1, t0, 2\n"                              // t1 = t0 * 4 (byte offset)
         "add %[pointer1], %[pointer1], t1\n"            // avanca ponteiro 1
         "add %[pointer2], %[pointer2], t1\n"            // '' '' 2
         "sub %[comprimento], %[comprimento], t0\n"      // tira comprimento processado
