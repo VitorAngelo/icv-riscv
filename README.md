@@ -12,4 +12,7 @@ Pontos para acrescentar no código Python (?) de analise dos dados:
 
 * mudar os gráficos para mostrar essas comparações estatísticas (boxplot)
 
+* rever KB (melhor) -> Kelementos....
+
+* manter MACs
 
