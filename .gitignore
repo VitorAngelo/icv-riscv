@@ -53,3 +53,6 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+dot0
+dot3

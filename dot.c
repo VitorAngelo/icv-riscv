@@ -72,10 +72,10 @@ int main(int argc, char *argv[])
     int8_t *bi8 = aligned_alloc(64, klen);
     int32_t *ai32 = aligned_alloc(64, klen * sizeof(int32_t));
     int32_t *bi32 = aligned_alloc(64, klen * sizeof(int32_t));
-    int32_t doti8, doti32;
+    int32_t doti8 = 0, doti32 = 0;
     float *af = aligned_alloc(64, klen * sizeof(float));
     float *bf = aligned_alloc(64, klen * sizeof(float));
-    float dotf;
+    float dotf = 0.0;
 
     if (!ai8 || !bi8 || !ai32 || !bi32 || !af || !bf) {
         perror("malloc");
