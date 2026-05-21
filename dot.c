@@ -58,7 +58,7 @@ int main(int argc, char *argv[])
         rseed = 0;
     }
     runs = 1;
-    if (argc < 5) {
+    if (argc > 4) {
         if ((sscanf(argv[4], "%d", &runs) == 1) && (runs < 1)) {
             runs = 1;
         }
