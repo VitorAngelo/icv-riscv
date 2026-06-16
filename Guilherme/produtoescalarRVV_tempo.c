@@ -126,16 +126,16 @@ int main(int argc, char *argv[])
     struct timespec t1, t2, t3, t4;
     long long ns2, ns3, ns4;
     double macs2, macs3, macs4;
-    int i, rseed, core_id, klen;
+    int i, rseed, core_id, klen, reps, r;
 
-    if ((argc < 3) || (sscanf(argv[1], "%d", &core_id) != 1) || (sscanf(argv[2], "%d", &klen) != 1)) {
-        fprintf(stderr, "%s core_num vec_len(kb)\n", argv[0]);
+    if ((argc < 4) || (sscanf(argv[1], "%d", &core_id) != 1) || (sscanf(argv[2], "%d", &klen) != 1) || (sscanf(argv[3], "%d", &reps) != 1)) {
+        fprintf(stderr, "%s core_num vec_len(Kelements) repetitions [rseed]\n", argv[0]);
         exit(0);
     }
-    if ((argc != 4) || (sscanf(argv[3], "%d", &rseed) != 1)) {
+    if ((argc != 5) || (sscanf(argv[4], "%d", &rseed) != 1)) {
         rseed = 0;
     }
-    fprintf(stderr, "core_id=%d klen=%d rseed=%d\n", core_id, klen, rseed);
+    fprintf(stderr, "core_id=%d kelements=%d reps=%d rseed=%d\n", core_id, klen, reps, rseed);
     core_affinity(core_id);
     klen *= 1024;
     srand(rseed);
@@ -163,22 +163,27 @@ int main(int argc, char *argv[])
         bf[i] = bi8[i];
     }
 
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    doti8 = dot_product_int8(ai8, bi8, klen);
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
-    doti32 = dot_product_int32(ai32, bi32, klen);
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t3);
-    dotf = dot_product_float32(af, bf, klen);
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t4);
+    printf("core_id ; Kelements ; rep ; int8 (ns) ; int32 (ns) ; f32 (ns) ; int8 (MACs/s) ; int32 (MACs/s) ; f32 (MACs/s)\n");
 
-    ns2 = (t2.tv_sec - t1.tv_sec) * 1000000000LL + (t2.tv_nsec - t1.tv_nsec);
-    ns3 = (t3.tv_sec - t2.tv_sec) * 1000000000LL + (t3.tv_nsec - t2.tv_nsec);
-    ns4 = (t4.tv_sec - t3.tv_sec) * 1000000000LL + (t4.tv_nsec - t3.tv_nsec);
-    macs2 = (double)klen / ((double)ns2 * 1.0e-9);
-    macs3 = (double)klen / ((double)ns3 * 1.0e-9);
-    macs4 = (double)klen / ((double)ns4 * 1.0e-9);
-    printf("core id ; MACS ; int8 (ns); int32 (ns) ; f32 (ns) ; int8 (MACs/s) ; int32 (MACs/s) ; f32 (MACs/s)\n");
-    printf("%d ; %d ; %lld ; %lld ; %lld ; %.3e ; %.3e ; %.3e\n", core_id, klen, ns2, ns3, ns4, macs2, macs3, macs4);
+    for (r = 0; r < reps; r++) {
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
+        doti8 = dot_product_int8(ai8, bi8, klen);
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
+        doti32 = dot_product_int32(ai32, bi32, klen);
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t3);
+        dotf = dot_product_float32(af, bf, klen);
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t4);
+
+        ns2 = (t2.tv_sec - t1.tv_sec) * 1000000000LL + (t2.tv_nsec - t1.tv_nsec);
+        ns3 = (t3.tv_sec - t2.tv_sec) * 1000000000LL + (t3.tv_nsec - t2.tv_nsec);
+        ns4 = (t4.tv_sec - t3.tv_sec) * 1000000000LL + (t4.tv_nsec - t3.tv_nsec);
+        macs2 = (double)klen / ((double)ns2 * 1.0e-9);
+        macs3 = (double)klen / ((double)ns3 * 1.0e-9);
+        macs4 = (double)klen / ((double)ns4 * 1.0e-9);
+
+        printf("%d ; %d ; %d ; %lld ; %lld ; %lld ; %.3e ; %.3e ; %.3e\n",
+               core_id, klen/1024, r+1, ns2, ns3, ns4, macs2, macs3, macs4);
+    }
 
     fprintf(stderr, "%d %d %f\n", (int)doti8, doti32, dotf);
     free(ai8); free(bi8);
