@@ -1,0 +1,166 @@
+#include <stdio.h>
+#include <math.h>
+
+#include "conv1_w_float.h"
+#include "conv1_b_float.h"
+#include "conv2_w_float.h"
+#include "conv2_b_float.h"
+#include "conv3_w_float.h"
+#include "conv3_b_float.h"
+#include "dense1_w_float.h"
+#include "dense1_b_float.h"
+#include "output_w_float.h"
+#include "output_b_float.h"
+#include "imagem_teste_uint8.h"
+#define IMG_H 32
+#define IMG_W 32
+#define IMG_C 1
+
+#define CONV1_F 6
+#define CONV1_K 5
+#define CONV1_OUT_H (IMG_H - CONV1_K + 1)
+#define CONV1_OUT_W (IMG_W - CONV1_K + 1)
+
+#define POOL1_H (CONV1_OUT_H / 2)
+#define POOL1_W (CONV1_OUT_W / 2)
+
+#define CONV2_F 16
+#define CONV2_K 5
+#define CONV2_OUT_H (POOL1_H - CONV2_K + 1)
+#define CONV2_OUT_W (POOL1_W - CONV2_K + 1)
+
+#define POOL2_H (CONV2_OUT_H / 2)
+#define POOL2_W (CONV2_OUT_W / 2)
+
+#define CONV3_F 120
+#define CONV3_K 5
+#define CONV3_OUT_H (POOL2_H - CONV3_K + 1)
+#define CONV3_OUT_W (POOL2_W - CONV3_K + 1)
+
+#define FLAT_SIZE (CONV3_F * CONV3_OUT_H * CONV3_OUT_W)
+
+#define DENSE1_OUT 84
+#define OUTPUT_SIZE 10
+
+void convolucao_2d(const float *entrada, int H, int W, int C_in,
+                   const float *kernel, const float *vies,
+                   int K, int C_out, float *saida) {
+    int H_out = H - K + 1;
+    int W_out = W - K + 1;
+
+    for (int f = 0; f < C_out; f++) {
+        for (int i = 0; i < H_out; i++) {
+            for (int j = 0; j < W_out; j++) {
+                float soma = 0.0f;
+                for (int c = 0; c < C_in; c++) {
+                    for (int ki = 0; ki < K; ki++) {
+                        for (int kj = 0; kj < K; kj++) {
+                            int idx_ent = c * (H * W) + (i + ki) * W + (j + kj);
+                            int idx_kern = ((ki * K + kj) * C_in + c) * C_out + f;
+                            soma += entrada[idx_ent] * kernel[idx_kern];
+                        }
+                    }
+                }
+                soma += vies[f];
+                saida[f * (H_out * W_out) + i * W_out + j] = soma;
+            }
+        }
+    }
+}
+
+void average_pooling_2x2(const float *entrada, int H, int W, int C,
+                         float *saida) {
+    int H_out = H / 2;
+    int W_out = W / 2;
+    for (int c = 0; c < C; c++) {
+        for (int i = 0; i < H_out; i++) {
+            for (int j = 0; j < W_out; j++) {
+                float soma = 0.0f;
+                for (int pi = 0; pi < 2; pi++)
+                    for (int pj = 0; pj < 2; pj++)
+                        soma += entrada[c * (H * W) + (2*i + pi) * W + (2*j + pj)];
+                saida[c * (H_out * W_out) + i * W_out + j] = soma * 0.25f;
+            }
+        }
+    }
+}
+
+void relu(float *dados, int n) {
+    for (int i = 0; i < n; i++)
+        if (dados[i] < 0.0f) dados[i] = 0.0f;
+}
+
+void camada_densa(const float *x, int dim_entrada,
+                  const float *W, const float *b, int dim_saida,
+                  float *y) {
+    for (int j = 0; j < dim_saida; j++) {
+        float soma = 0.0f;
+        for (int i = 0; i < dim_entrada; i++)
+            soma += x[i] * W[i * dim_saida + j];
+        y[j] = soma + b[j];
+    }
+}
+
+void softmax(float *x, int n) {
+    float max = x[0];
+    for (int i = 1; i < n; i++) if (x[i] > max) max = x[i];
+    float soma = 0.0f;
+    for (int i = 0; i < n; i++) {
+        x[i] = expf(x[i] - max);
+        soma += x[i];
+    }
+    for (int i = 0; i < n; i++) x[i] /= soma;
+}
+
+void forward(const float *img, float *probs) {
+    float conv1_out[CONV1_F * CONV1_OUT_H * CONV1_OUT_W];
+    float pool1_out[CONV1_F * POOL1_H * POOL1_W];
+    float conv2_out[CONV2_F * CONV2_OUT_H * CONV2_OUT_W];
+    float pool2_out[CONV2_F * POOL2_H * POOL2_W];
+    float conv3_out[CONV3_F * CONV3_OUT_H * CONV3_OUT_W];
+    float dense1_out[DENSE1_OUT];
+    float output[OUTPUT_SIZE];
+
+    convolucao_2d(img, IMG_H, IMG_W, IMG_C,
+                  conv1_w_float, conv1_b_float, CONV1_K, CONV1_F, conv1_out);
+    relu(conv1_out, CONV1_F * CONV1_OUT_H * CONV1_OUT_W);
+
+    average_pooling_2x2(conv1_out, CONV1_OUT_H, CONV1_OUT_W, CONV1_F, pool1_out);
+
+    convolucao_2d(pool1_out, POOL1_H, POOL1_W, CONV1_F,
+                  conv2_w_float, conv2_b_float, CONV2_K, CONV2_F, conv2_out);
+    relu(conv2_out, CONV2_F * CONV2_OUT_H * CONV2_OUT_W);
+
+    average_pooling_2x2(conv2_out, CONV2_OUT_H, CONV2_OUT_W, CONV2_F, pool2_out);
+
+    convolucao_2d(pool2_out, POOL2_H, POOL2_W, CONV2_F,
+                  conv3_w_float, conv3_b_float, CONV3_K, CONV3_F, conv3_out);
+    relu(conv3_out, CONV3_F * CONV3_OUT_H * CONV3_OUT_W);
+
+    camada_densa(conv3_out, FLAT_SIZE, dense1_w_float, dense1_b_float, DENSE1_OUT, dense1_out);
+    relu(dense1_out, DENSE1_OUT);
+
+    camada_densa(dense1_out, DENSE1_OUT, output_w_float, output_b_float, OUTPUT_SIZE, output);
+    softmax(output, OUTPUT_SIZE);
+
+    for (int i = 0; i < OUTPUT_SIZE; i++) probs[i] = output[i];
+}
+
+int main() {
+    float img[IMG_H * IMG_W];
+    for (int i = 0; i < IMG_H * IMG_W; i++)
+        img[i] = (float)imagem_teste_uint8[i] / 255.0f;
+
+    float probs[OUTPUT_SIZE];
+    forward(img, probs);
+
+    printf("Probabilidades:\n");
+    int classe = 0;
+    float max_p = probs[0];
+    for (int i = 0; i < OUTPUT_SIZE; i++) {
+        printf("  %d: %.6f\n", i, probs[i]);
+        if (probs[i] > max_p) { max_p = probs[i]; classe = i; }
+    }
+    printf("Classe prevista: %d (%.2f%%)\n", classe, 100.0 * max_p);
+    return 0;
+}
