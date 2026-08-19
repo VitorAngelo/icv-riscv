@@ -22,7 +22,8 @@
 #include "output_w_int8.h"
 #include "output_escala.h"
 #include "output_b_float.h"
-#include "imagem_teste_uint8.h"
+#include "x_test_uint8.h"
+#include "y_test_uint8.h"
 
 #define IMG_H 32
 #define IMG_W 32
@@ -181,30 +182,46 @@ int main(int argc, char **argv) {
     core_affinity(core_id);
 
     float img[IMG_H * IMG_W];
-    for (int i = 0; i < IMG_H * IMG_W; i++)
-        img[i] = (float)imagem_teste_uint8[i] / 255.0f;
-
     float probs[OUTPUT_SIZE];
 
     struct timespec t1, t2;
-    long long ns;
+    long long ns_total = 0;
+    int acertos = 0;
+    int num_imagens = x_test_uint8_NUM_IMAGENS;
 
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    forward(img, probs);
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
+    for (int n = 0; n < num_imagens; n++) {
+        const uint8_t *img_ptr = &x_test_uint8[n * IMG_H * IMG_W];
+        for (int i = 0; i < IMG_H * IMG_W; i++)
+            img[i] = (float)img_ptr[i] / 255.0f;
 
-    ns = (t2.tv_sec - t1.tv_sec) * 1000000000LL + (t2.tv_nsec - t1.tv_nsec);
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
+        forward(img, probs);
+        clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
 
-    printf("Probabilidades:\n");
-    int classe = 0;
-    float max_p = probs[0];
-    for (int i = 0; i < OUTPUT_SIZE; i++) {
-        printf("  %d: %.6f\n", i, probs[i]);
-        if (probs[i] > max_p) { max_p = probs[i]; classe = i; }
+        long long ns = (t2.tv_sec - t1.tv_sec) * 1000000000LL +
+                       (t2.tv_nsec - t1.tv_nsec);
+        ns_total += ns;
+
+        int classe = 0;
+        float max_p = probs[0];
+        for (int i = 1; i < OUTPUT_SIZE; i++) {
+            if (probs[i] > max_p) {
+                max_p = probs[i];
+                classe = i;
+            }
+        }
+        if (classe == y_test_uint8[n]) acertos++;
     }
 
-    printf("Classe prevista: %d (%.2f%%)\n", classe, 100.0 * max_p);
-    printf("Tempo de inferência: %lld ns (%.2f us)\n", ns, ns / 1e3);
+    double acuracia = 100.0 * (double)acertos / (double)num_imagens;
+    double tempo_medio_ns = (double)ns_total / (double)num_imagens;
+
+    printf("Core: %d\n", core_id);
+    printf("Imagens avaliadas: %d\n", num_imagens);
+    printf("Acertos: %d\n", acertos);
+    printf("Acurácia: %.2f%%\n", acuracia);
+    printf("Tempo total: %.3f ms\n", ns_total / 1e6);
+    printf("Tempo médio por inferência: %.2f us\n", tempo_medio_ns / 1e3);
 
     return 0;
 }
