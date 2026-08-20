@@ -175,7 +175,7 @@ void forward(const float *img, float *probs) {
     for (int i = 0; i < OUTPUT_SIZE; i++) probs[i] = output[i];
 }
 
-int main(int argc, char **argv) {
+int main(int argc, char **argv) { // essa e core_affinity no arquivo principal
     int core_id = 0;
     if (argc > 1) core_id = atoi(argv[1]);
 
@@ -191,11 +191,11 @@ int main(int argc, char **argv) {
 
     for (int n = 0; n < num_imagens; n++) {
         const uint8_t *img_ptr = &x_test_uint8[n * IMG_H * IMG_W];
-        for (int i = 0; i < IMG_H * IMG_W; i++)
+        for (int i = 0; i < IMG_H * IMG_W; i++) // vai para dentro da funcao
             img[i] = (float)img_ptr[i] / 255.0f;
 
         clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-        forward(img, probs);
+        forward(img, probs); // mudar img_ptr para a assinatura da funcao
         clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
 
         long long ns = (t2.tv_sec - t1.tv_sec) * 1000000000LL +
