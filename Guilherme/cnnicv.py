@@ -188,7 +188,7 @@ for camada in ['conv1', 'conv2', 'conv3', 'dense1', 'output']:
     with open(f"{camada}_w_int32.h", "w") as f:
         f.write(exportar_int32(w_int32, f"{camada}_w_int32"))
 
-    b_i32_int32 = np.round(b / (escala_entrada * ESCALA_INT32)).astype(np.int32)
+    b_i32_int32 = np.round(b * ESCALA_INT32 / escala_entrada).astype(np.int32)
     with open(f"{camada}_b_int32_i32.h", "w") as f:
         f.write(exportar_int32(b_i32_int32, f"{camada}_b_int32_i32"))
 
