@@ -12,7 +12,7 @@ typedef struct {
     double softmax_us;
 } TemposCamadasInt32;
 
-void inferencia_int32(const int32_t *img_int32, float *probs,
+void inferencia_int32(const uint8_t *img_uint8, float *probs,
                       TemposCamadasInt32 *tempos, int aplicar_softmax);
 
 #endif
