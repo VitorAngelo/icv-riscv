@@ -4,33 +4,30 @@
 #include <stdint.h>
 #include <math.h>
 #include <time.h>
-#include <string.h>
-#include <stdlib.h>
 
 #include "int8.h"
 
-#include "conv1_w_int8.h"
-#include "conv2_w_int8.h"
-#include "conv3_w_int8.h"
-#include "dense1_w_int8.h"
-#include "output_w_int8.h"
+#include "int8_std_conv1_w.h"
+#include "int8_std_conv1_b.h"
+#include "int8_std_conv2_w.h"
+#include "int8_std_conv2_b.h"
+#include "int8_std_conv3_w.h"
+#include "int8_std_conv3_b.h"
+#include "int8_dense1_w.h"
+#include "int8_dense1_b.h"
+#include "int8_output_w.h"
+#include "int8_output_b.h"
 
-#include "conv1_b_int32.h"
-#include "conv2_b_int32.h"
-#include "conv3_b_int32.h"
-#include "dense1_b_int32.h"
-#include "output_b_int32.h"
+#include "int8_std_conv1_escala.h"
+#include "int8_std_conv2_escala.h"
+#include "int8_std_conv3_escala.h"
+#include "int8_dense1_escala.h"
+#include "int8_output_escala.h"
 
-#include "conv1_escala.h"
-#include "conv2_escala.h"
-#include "conv3_escala.h"
-#include "dense1_escala.h"
-#include "output_escala.h"
-
-#include "conv1_escala_ativ.h"
-#include "conv2_escala_ativ.h"
-#include "conv3_escala_ativ.h"
-#include "dense1_escala_ativ.h"
+#include "int8_conv1_escala_ativ.h"
+#include "int8_conv2_escala_ativ.h"
+#include "int8_conv3_escala_ativ.h"
+#include "int8_dense1_escala_ativ.h"
 
 #define IMG_H 32
 #define IMG_W 32
@@ -68,8 +65,8 @@ static double diff_us(struct timespec inicio, struct timespec fim) {
 }
 
 static void convolucao_2d_int8(const uint8_t *entrada, int H, int W, int C_in,
-                               const int8_t *kernel, const int32_t *vies,
-                               int K, int C_out, int32_t *saida) {
+                                    const int8_t *kernel, const int32_t *vies,
+                                    int K, int C_out, int32_t *saida) {
     int H_out = H - K + 1;
     int W_out = W - K + 1;
 
@@ -93,8 +90,8 @@ static void convolucao_2d_int8(const uint8_t *entrada, int H, int W, int C_in,
 }
 
 static void camada_densa_int8(const uint8_t *x, int dim_entrada,
-                              const int8_t *W, const int32_t *b,
-                              int dim_saida, int32_t *saida) {
+                                   const int8_t *W, const int32_t *b,
+                                   int dim_saida, int32_t *saida) {
     for (int j = 0; j < dim_saida; j++) {
         int32_t soma = b[j];
         for (int i = 0; i < dim_entrada; i++) {
@@ -111,8 +108,8 @@ static void relu_int32(int32_t *dados, int n) {
 
 static void average_pooling_2x2_int32(const int32_t *entrada, int H, int W, int C,
                                       int32_t *saida) {
-    int H_out = H / 2;
-    int W_out = W / 2;
+    int H_out = H >> 1;
+    int W_out = W >> 1;
     for (int c = 0; c < C; c++) {
         for (int i = 0; i < H_out; i++) {
             for (int j = 0; j < W_out; j++) {
@@ -120,32 +117,34 @@ static void average_pooling_2x2_int32(const int32_t *entrada, int H, int W, int 
                 for (int pi = 0; pi < 2; pi++)
                     for (int pj = 0; pj < 2; pj++)
                         soma += entrada[c * (H * W) + (2*i + pi) * W + (2*j + pj)];
-                saida[c * (H_out * W_out) + i * W_out + j] = (soma + 2) / 4;
+                saida[c * (H_out * W_out) + i * W_out + j] = (soma + 2) >> 2;
             }
         }
     }
 }
 
-static void requantizar_por_canal(const int32_t *entrada, int n,
+static void requantizar_por_canal(const int32_t *entrada, int H, int W,
                                   const float *escala_peso, int n_canais,
                                   float escala_entrada, float escala_ativ_saida,
                                   uint8_t *saida) {
-    int elementos_por_canal = n / n_canais;
-    for (int i = 0; i < n; i++) {
-        int canal = i / elementos_por_canal;
-        float fator = (escala_entrada * escala_peso[canal]) / escala_ativ_saida;
-        float val = (float)entrada[i] * fator;
-        int32_t arred = (int32_t)(val + 0.5f);
-        if (arred < 0) arred = 0;
-        if (arred > 255) arred = 255;
-        saida[i] = (uint8_t)arred;
+    int plano = H * W;
+    for (int c = 0; c < n_canais; c++) {
+        float fator = (escala_entrada * escala_peso[c]) / escala_ativ_saida;
+        int offset = c * plano;
+        for (int i = 0; i < plano; i++) {
+            int idx = offset + i;
+            float val = (float)entrada[idx] * fator;
+            int32_t arred = (int32_t)(val + 0.5f);
+            if (arred < 0) arred = 0;
+            if (arred > 255) arred = 255;
+            saida[idx] = (uint8_t)arred;
+        }
     }
 }
 
 static void softmax(float *x, int n) {
     float max = x[0];
     for (int i = 1; i < n; i++) if (x[i] > max) max = x[i];
-
     float soma = 0.0f;
     for (int i = 0; i < n; i++) {
         x[i] = expf(x[i] - max);
@@ -153,10 +152,8 @@ static void softmax(float *x, int n) {
     }
     for (int i = 0; i < n; i++) x[i] /= soma;
 }
-
 void inferencia_int8(const uint8_t *img_uint8, float *probs,
                      TemposCamadasInt8 *tempos, int aplicar_softmax) {
-    uint8_t img_u8[IMG_H * IMG_W];
     int32_t conv1_out[CONV1_F * CONV1_OUT_H * CONV1_OUT_W];
     int32_t pool1_i32[CONV1_F * POOL1_H * POOL1_W];
     uint8_t pool1_u8[CONV1_F * POOL1_H * POOL1_W];
@@ -176,62 +173,61 @@ void inferencia_int8(const uint8_t *img_uint8, float *probs,
 
     struct timespec t1, t2;
 
-    memcpy(img_u8, img_uint8, IMG_H * IMG_W);
-
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    convolucao_2d_int8(img_u8, IMG_H, IMG_W, IMG_C,
-                       conv1_w_int8, conv1_b_int32, CONV1_K, CONV1_F, conv1_out);
+    convolucao_2d_int8(img_uint8, IMG_H, IMG_W, IMG_C,
+                            int8_std_conv1_w, int8_std_conv1_b, CONV1_K, CONV1_F, conv1_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->conv1_us = diff_us(t1, t2);
 
     relu_int32(conv1_out, CONV1_F * CONV1_OUT_H * CONV1_OUT_W);
     average_pooling_2x2_int32(conv1_out, CONV1_OUT_H, CONV1_OUT_W, CONV1_F, pool1_i32);
-    requantizar_por_canal(pool1_i32, CONV1_F * POOL1_H * POOL1_W,
-                          conv1_escala, CONV1_F,
-                          1.0f/255.0f, CONV1_ESCALA_ATIV_ESCALA, pool1_u8);
+    requantizar_por_canal(pool1_i32, POOL1_H, POOL1_W,
+                          int8_std_conv1_escala, CONV1_F,
+                          1.0f/255.0f, INT8_CONV1_ESCALA_ATIV, pool1_u8);
 
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
     convolucao_2d_int8(pool1_u8, POOL1_H, POOL1_W, CONV1_F,
-                       conv2_w_int8, conv2_b_int32, CONV2_K, CONV2_F, conv2_out);
+                            int8_std_conv2_w, int8_std_conv2_b, CONV2_K, CONV2_F, conv2_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->conv2_us = diff_us(t1, t2);
 
     relu_int32(conv2_out, CONV2_F * CONV2_OUT_H * CONV2_OUT_W);
     average_pooling_2x2_int32(conv2_out, CONV2_OUT_H, CONV2_OUT_W, CONV2_F, pool2_i32);
-    requantizar_por_canal(pool2_i32, CONV2_F * POOL2_H * POOL2_W,
-                          conv2_escala, CONV2_F,
-                          CONV1_ESCALA_ATIV_ESCALA, CONV2_ESCALA_ATIV_ESCALA, pool2_u8);
+    requantizar_por_canal(pool2_i32, POOL2_H, POOL2_W,
+                          int8_std_conv2_escala, CONV2_F,
+                          INT8_CONV1_ESCALA_ATIV, INT8_CONV2_ESCALA_ATIV, pool2_u8);
 
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
     convolucao_2d_int8(pool2_u8, POOL2_H, POOL2_W, CONV2_F,
-                       conv3_w_int8, conv3_b_int32, CONV3_K, CONV3_F, conv3_out);
+                            int8_std_conv3_w, int8_std_conv3_b, CONV3_K, CONV3_F, conv3_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->conv3_us = diff_us(t1, t2);
 
     relu_int32(conv3_out, CONV3_F * CONV3_OUT_H * CONV3_OUT_W);
-    requantizar_por_canal(conv3_out, FLAT_SIZE,
-                          conv3_escala, CONV3_F,
-                          CONV2_ESCALA_ATIV_ESCALA, CONV3_ESCALA_ATIV_ESCALA, conv3_u8);
+    requantizar_por_canal(conv3_out, CONV3_OUT_H, CONV3_OUT_W,
+                          int8_std_conv3_escala, CONV3_F,
+                          INT8_CONV2_ESCALA_ATIV, INT8_CONV3_ESCALA_ATIV, conv3_u8);
+
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    camada_densa_int8(conv3_u8, FLAT_SIZE, dense1_w_int8, dense1_b_int32,
-                      DENSE1_OUT, dense1_out);
+    camada_densa_int8(conv3_u8, FLAT_SIZE,
+                           int8_dense1_w, int8_dense1_b, DENSE1_OUT, dense1_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->dense1_us = diff_us(t1, t2);
 
     relu_int32(dense1_out, DENSE1_OUT);
-    requantizar_por_canal(dense1_out, DENSE1_OUT,
-                          dense1_escala, DENSE1_OUT,
-                          CONV3_ESCALA_ATIV_ESCALA, DENSE1_ESCALA_ATIV_ESCALA, dense1_u8);
-    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
+    requantizar_por_canal(dense1_out, 1, 1,
+                          int8_dense1_escala, DENSE1_OUT,
+                          INT8_CONV3_ESCALA_ATIV, INT8_DENSE1_ESCALA_ATIV, dense1_u8);
 
-    camada_densa_int8(dense1_u8, DENSE1_OUT, output_w_int8, output_b_int32,
-                      OUTPUT_SIZE, output_i32);
+    clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
+    camada_densa_int8(dense1_u8, DENSE1_OUT,
+                           int8_output_w, int8_output_b, OUTPUT_SIZE, output_i32);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->output_us = diff_us(t1, t2);
 
     for (int i = 0; i < OUTPUT_SIZE; i++) {
         output_float[i] = (float)output_i32[i] *
-                          (DENSE1_ESCALA_ATIV_ESCALA * output_escala[i]);
+                          (INT8_DENSE1_ESCALA_ATIV * int8_output_escala[i]);
     }
 
     if (aplicar_softmax) {
