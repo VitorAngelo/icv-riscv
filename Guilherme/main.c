@@ -10,6 +10,8 @@
 #include "int32.h"
 #include "float32.h"
 #include "x_test_uint8.h"
+#include "x_test_q32.h"
+#include "x_test_fp32.h"
 #include "y_test_uint8.h"
 
 void core_affinity(int core_id) {
@@ -80,7 +82,7 @@ static void testar_int32(int core_id, int aplicar_softmax, int num_imagens) {
     int acertos = 0;
 
     for (int n = 0; n < num_imagens; n++) {
-        const uint8_t *img_ptr = &x_test_uint8[n * 32 * 32];
+        const int32_t *img_ptr = &x_test_q32[n * 32 * 32];  
         TemposCamadasInt32 tempos_imagem;
         clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
         inferencia_int32(img_ptr, probs, &tempos_imagem, aplicar_softmax);
@@ -130,7 +132,7 @@ static void testar_float32(int core_id, int aplicar_softmax, int num_imagens) {
     int acertos = 0;
 
     for (int n = 0; n < num_imagens; n++) {
-        const uint8_t *img_ptr = &x_test_uint8[n * 32 * 32];
+        const float *img_ptr = &x_test_fp32[n * 32 * 32];  
         TemposCamadasFloat32 tempos_imagem;
         clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
         inferencia_float32(img_ptr, probs, &tempos_imagem, aplicar_softmax);
@@ -196,7 +198,7 @@ int main(int argc, char **argv) {
             testar_float32(core_id, aplicar_softmax, num_imagens);
             break;
         default:
-            fprintf(stderr, "Tipo inválido. Use 0 (int8), 1 (int32), 2 (float32).\n");
+            fprintf(stderr, "Tipo inválido. Use 0 (int8), 1 (int32) ou 2 (float32).\n");
             return 1;
     }
 
