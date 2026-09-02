@@ -4,21 +4,19 @@
 #include <stdint.h>
 #include <math.h>
 #include <time.h>
-#include <string.h>
 
 #include "float32.h"
 
-#include "conv1_w_float.h"
-#include "conv2_w_float.h"
-#include "conv3_w_float.h"
-#include "dense1_w_float.h"
-#include "output_w_float.h"
-
-#include "conv1_b_float.h"
-#include "conv2_b_float.h"
-#include "conv3_b_float.h"
-#include "dense1_b_float.h"
-#include "output_b_float.h"
+#include "fp32_conv1_w.h"
+#include "fp32_conv1_b.h"
+#include "fp32_conv2_w.h"
+#include "fp32_conv2_b.h"
+#include "fp32_conv3_w.h"
+#include "fp32_conv3_b.h"
+#include "fp32_dense1_w.h"
+#include "fp32_dense1_b.h"
+#include "fp32_output_w.h"
+#include "fp32_output_b.h"
 
 #define IMG_H 32
 #define IMG_W 32
@@ -99,8 +97,8 @@ static void relu_float(float *dados, int n) {
 
 static void average_pooling_2x2_float(const float *entrada, int H, int W, int C,
                                       float *saida) {
-    int H_out = H / 2;
-    int W_out = W / 2;
+    int H_out = H >> 1;
+    int W_out = W >> 1;
     for (int c = 0; c < C; c++) {
         for (int i = 0; i < H_out; i++) {
             for (int j = 0; j < W_out; j++) {
@@ -117,7 +115,6 @@ static void average_pooling_2x2_float(const float *entrada, int H, int W, int C,
 static void softmax(float *x, int n) {
     float max = x[0];
     for (int i = 1; i < n; i++) if (x[i] > max) max = x[i];
-
     float soma = 0.0f;
     for (int i = 0; i < n; i++) {
         x[i] = expf(x[i] - max);
@@ -126,59 +123,55 @@ static void softmax(float *x, int n) {
     for (int i = 0; i < n; i++) x[i] /= soma;
 }
 
-void inferencia_float32(const uint8_t *img_uint8, float *probs,
-                        TemposCamadasFloat32 *tempos, int aplicar_softmax) {
-    float img[IMG_H * IMG_W];
-    for (int i = 0; i < IMG_H * IMG_W; i++)
-        img[i] = (float)img_uint8[i] / 255.0f;
-
+void inferencia_float32(const float *img_f32, float *probs,
+                        TemposCamadasFloat32 *tempos, int aplicar_softmax) {   
     float conv1_out[CONV1_F * CONV1_OUT_H * CONV1_OUT_W];
     float pool1_out[CONV1_F * POOL1_H * POOL1_W];
+
     float conv2_out[CONV2_F * CONV2_OUT_H * CONV2_OUT_W];
     float pool2_out[CONV2_F * POOL2_H * POOL2_W];
+
     float conv3_out[CONV3_F * CONV3_OUT_H * CONV3_OUT_W];
+
     float dense1_out[DENSE1_OUT];
+
     float output[OUTPUT_SIZE];
 
     struct timespec t1, t2;
 
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    convolucao_2d_float32(img, IMG_H, IMG_W, IMG_C,
-                          conv1_w_float, conv1_b_float, CONV1_K, CONV1_F, conv1_out);
+    convolucao_2d_float32(img_f32, IMG_H, IMG_W, IMG_C,
+                          fp32_conv1_w, fp32_conv1_b, CONV1_K, CONV1_F, conv1_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->conv1_us = diff_us(t1, t2);
 
     relu_float(conv1_out, CONV1_F * CONV1_OUT_H * CONV1_OUT_W);
     average_pooling_2x2_float(conv1_out, CONV1_OUT_H, CONV1_OUT_W, CONV1_F, pool1_out);
-
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
     convolucao_2d_float32(pool1_out, POOL1_H, POOL1_W, CONV1_F,
-                          conv2_w_float, conv2_b_float, CONV2_K, CONV2_F, conv2_out);
+                          fp32_conv2_w, fp32_conv2_b, CONV2_K, CONV2_F, conv2_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->conv2_us = diff_us(t1, t2);
 
     relu_float(conv2_out, CONV2_F * CONV2_OUT_H * CONV2_OUT_W);
     average_pooling_2x2_float(conv2_out, CONV2_OUT_H, CONV2_OUT_W, CONV2_F, pool2_out);
-
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
     convolucao_2d_float32(pool2_out, POOL2_H, POOL2_W, CONV2_F,
-                          conv3_w_float, conv3_b_float, CONV3_K, CONV3_F, conv3_out);
+                          fp32_conv3_w, fp32_conv3_b, CONV3_K, CONV3_F, conv3_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->conv3_us = diff_us(t1, t2);
 
     relu_float(conv3_out, CONV3_F * CONV3_OUT_H * CONV3_OUT_W);
-
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    camada_densa_float32(conv3_out, FLAT_SIZE, dense1_w_float, dense1_b_float,
-                         DENSE1_OUT, dense1_out);
+    camada_densa_float32(conv3_out, FLAT_SIZE,
+                         fp32_dense1_w, fp32_dense1_b, DENSE1_OUT, dense1_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->dense1_us = diff_us(t1, t2);
 
     relu_float(dense1_out, DENSE1_OUT);
-
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    camada_densa_float32(dense1_out, DENSE1_OUT, output_w_float, output_b_float,
-                         OUTPUT_SIZE, output);
+    camada_densa_float32(dense1_out, DENSE1_OUT,
+                         fp32_output_w, fp32_output_b, OUTPUT_SIZE, output);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->output_us = diff_us(t1, t2);
 
