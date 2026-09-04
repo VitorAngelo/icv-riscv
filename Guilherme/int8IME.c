@@ -1,37 +1,39 @@
 #define _POSIX_C_SOURCE 199309L
 
-#include <stdio.h>
 #include <stdint.h>
 #include <math.h>
 #include <time.h>
 #include <string.h>
-#include <stdlib.h>
 
 #include "int8.h"
 
-#include "conv1_w_int8.h"
-#include "conv2_w_int8.h"
-#include "conv3_w_int8.h"
-#include "dense1_w_int8.h"
-#include "output_w_int8.h"
+//pesos que carregam Btile diretamente
+#include "int8_conv1_w_ime_tiles.h"
+#include "int8_conv1_b_ime.h"
+#include "int8_conv2_w_ime_tiles.h"
+#include "int8_conv2_b_ime.h"
+#include "int8_conv3_w_ime_tiles.h"
+#include "int8_conv3_b_ime.h"
+#include "int8_dense1_w_ime_tiles.h"
+#include "int8_dense1_b_ime.h"
 
-#include "conv1_b_int32.h"
-#include "conv2_b_int32.h"
-#include "conv3_b_int32.h"
-#include "dense1_b_int32.h"
-#include "output_b_int32.h"
+#include "int8_output_w.h"
+#include "int8_output_b.h"
 
-#include "conv1_escala.h"
-#include "conv2_escala.h"
-#include "conv3_escala.h"
-#include "dense1_escala.h"
-#include "output_escala.h"
+//escalas por canal pra requantizar
+#include "int8_conv1_escala.h"
+#include "int8_conv2_escala.h"
+#include "int8_conv3_escala.h"
+#include "int8_dense1_escala.h"
+#include "int8_output_escala.h"
 
-#include "conv1_escala_ativ.h"
-#include "conv2_escala_ativ.h"
-#include "conv3_escala_ativ.h"
-#include "dense1_escala_ativ.h"
+//escalas pra ativação
+#include "int8_conv1_escala_ativ.h"
+#include "int8_conv2_escala_ativ.h"
+#include "int8_conv3_escala_ativ.h"
+#include "int8_dense1_escala_ativ.h"
 
+//dimensões
 #define IMG_H 32
 #define IMG_W 32
 #define IMG_C 1
@@ -41,16 +43,16 @@
 #define CONV1_OUT_H (IMG_H - CONV1_K + 1)
 #define CONV1_OUT_W (IMG_W - CONV1_K + 1)
 
-#define POOL1_H (CONV1_OUT_H / 2)
-#define POOL1_W (CONV1_OUT_W / 2)
+#define POOL1_H (CONV1_OUT_H >> 1)
+#define POOL1_W (CONV1_OUT_W >> 1)
 
 #define CONV2_F 16
 #define CONV2_K 5
 #define CONV2_OUT_H (POOL1_H - CONV2_K + 1)
 #define CONV2_OUT_W (POOL1_W - CONV2_K + 1)
 
-#define POOL2_H (CONV2_OUT_H / 2)
-#define POOL2_W (CONV2_OUT_W / 2)
+#define POOL2_H (CONV2_OUT_H >> 1)
+#define POOL2_W (CONV2_OUT_W >> 1)
 
 #define CONV3_F 120
 #define CONV3_K 5
@@ -62,193 +64,132 @@
 #define DENSE1_OUT 84
 #define OUTPUT_SIZE 10
 
-#define CONV1_K_REAL (IMG_C * CONV1_K * CONV1_K) 
+#define CONV1_K_REAL (IMG_C * CONV1_K * CONV1_K)  
 #define CONV1_K_PAD  32
 #define CONV1_F_PAD  8
 
 #define CONV2_K_REAL (CONV1_F * CONV2_K * CONV2_K)  
 #define CONV2_K_PAD  152
 
-#define CONV3_K_REAL (CONV2_F * CONV3_K * CONV3_K)  
-
-#define OUTPUT_EIN_PAD  88
-#define OUTPUT_EOUT_PAD 12 
+#define CONV3_K_REAL (CONV2_F * CONV3_K * CONV3_K) 
 
 static double diff_us(struct timespec inicio, struct timespec fim) {
     return (fim.tv_sec - inicio.tv_sec) * 1e6 +
            (fim.tv_nsec - inicio.tv_nsec) / 1e3;
 }
 
-// Executa um tile 4x8x4 usando smt.vmadotus (A uint8, B int8, C int32)
+//C += A * B^T para matrizes 4x8 (A) e 8x4 (B), resultando em C 4x4.
+//Ae B em int8, C int32.
 static inline void tile4x8x4_us(const uint8_t A[32], const int8_t B[32], int32_t Cacc[16]) {
     __asm__ volatile(
-        "vsetvli      t0, zero, e32, m2   \n\t"   // configura vd/vd+1 como int32
-        "vle32.v      v16, (%[C])         \n\t"   // carrega acumulador atual
-        "vsetvli      t0, zero, e8, m1    \n\t"   // configura entrada int8
-        "vle8.v       v0, (%[A])          \n\t"
-        "vle8.v       v1, (%[B])          \n\t"
-        "smt.vmadotus v16, v0, v1         \n\t"   // C += A * B^T
+        "vsetvli      t0, zero, e32, m2   \n\t"  //configura 16 acumuladores int32
+        "vle32.v      v16, (%[C])         \n\t"  //carrega Cacc
+        "vsetvli      t0, zero, e8, m1    \n\t"  //configura vetores int8 de 32 bytes
+        "vle8.v       v0, (%[A])          \n\t"  //carrega A
+        "vle8.v       v1, (%[B])          \n\t"  //carrega B
+        "smt.vmadotus v16, v0, v1         \n\t"  //acumula
         "vsetvli      t0, zero, e32, m2   \n\t"
-        "vse32.v      v16, (%[C])         \n\t"   // armazena acumulador
+        "vse32.v      v16, (%[C])         \n\t"  // salva Cacc
         :
         : [A] "r"(A), [B] "r"(B), [C] "r"(Cacc)
-        : "cc", "memory", "t0");
+        : "memory", "t0", "v0", "v1", "v16", "v17");
 }
 
-static void conv2d_ime_padded(const uint8_t *entrada, int H, int W,
-                               int K, int C_out_real, int C_out_pad,
-                               int K_real, int K_pad,
-                               const int8_t *pesos_pad, const int32_t *bias_pad,
-                               int32_t *saida) {
+static void conv2d_ime(const uint8_t *entrada, int H, int W,
+                       int K, int C_out_real, int C_out_pad,
+                       int K_real, int K_pad,
+                       const int8_t *pesos_tiles, const int32_t *bias_pad,
+                       int32_t *saida) {
     int H_out = H - K + 1, W_out = W - K + 1;
-    int M_total = H_out * W_out;
-    int KK = K * K, HW = H * W;
+    int HW = H * W;
+    int num_tiles_k = K_pad >> 3;
 
-    for (int f = 0; f < C_out_pad; f += 4) {        
-        for (int m_start = 0; m_start < M_total; m_start += 4) { 
-            int mg[4], ii[4], jj[4];
-            for (int r = 0; r < 4; r++) {
-                int m = m_start + r;
-                if (m >= M_total) m = M_total - 1;   
-                mg[r] = m; ii[r] = m / W_out; jj[r] = m % W_out;
-            }
+    for (int f = 0; f < C_out_pad; f += 4) {
+        int tile_n = f >> 2;
 
-            int32_t acc[16];
-            for (int r = 0; r < 4; r++)
-                for (int c4 = 0; c4 < 4; c4++)
-                    acc[r * 4 + c4] = bias_pad[f + c4]; 
-            for (int kg0 = 0; kg0 < K_pad; kg0 += 8) {   
-                uint8_t Atile[32];
-                int8_t  Btile[32];
-                for (int kk = 0; kk < 8; kk++) {
-                    int kg = kg0 + kk;
-                    int kg_ent = (kg < K_real) ? kg : (K_real - 1); 
-                    int c = kg_ent / KK, rm = kg_ent % KK, ki = rm / K, kj = rm % K;
-                    for (int r = 0; r < 4; r++)
-                        Atile[r * 8 + kk] = entrada[c * HW + (ii[r] + ki) * W + (jj[r] + kj)];
-                    for (int c4 = 0; c4 < 4; c4++)
-                        Btile[c4 * 8 + kk] = pesos_pad[kg * C_out_pad + (f + c4)];
-                }
-                tile4x8x4_us(Atile, Btile, acc);
-            }
-
-            for (int r = 0; r < 4; r++) {
-                if (m_start + r >= M_total) break;    
-                for (int c4 = 0; c4 < 4; c4++) {
-                    int fc = f + c4;
-                    if (fc < C_out_real)             
-                        saida[fc * (H_out * W_out) + mg[r]] = acc[r * 4 + c4];
-                }
-            }
-        }
-    }
-}
-
-static void densa_ime_padded(const uint8_t *x, int Ein_real, int Ein_pad,
-                              int Eout_real, int Eout_pad,
-                              const int8_t *pesos_pad, const int32_t *bias_pad,
-                              int32_t *saida) {
-    for (int n = 0; n < Eout_pad; n += 4) {          
-        int32_t acc[16];
-        for (int r = 0; r < 4; r++)
-            for (int c = 0; c < 4; c++)
-                acc[r * 4 + c] = bias_pad[n + c];
-
-        for (int k = 0; k < Ein_pad; k += 8) {       
-            uint8_t Atile[32];
-            int8_t  Btile[32];
-            for (int kk = 0; kk < 8; kk++) {
-                int kg = k + kk;
-                uint8_t a = (kg < Ein_real) ? x[kg] : x[Ein_real - 1];
+        for (int i = 0; i < H_out; i++) {
+            for (int j = 0; j < W_out; j += 4) {
+                int jj[4];
                 for (int r = 0; r < 4; r++)
-                    Atile[r * 8 + kk] = a;            
-            }
-            for (int c = 0; c < 4; c++)
-                for (int kk = 0; kk < 8; kk++)
-                    Btile[c * 8 + kk] = pesos_pad[(k + kk) * Eout_pad + (n + c)];
-            tile4x8x4_us(Atile, Btile, acc);
-        }
+                    jj[r] = (j + r < W_out) ? (j + r) : (W_out - 1);
 
-        for (int c = 0; c < 4; c++) {
-            int nc = n + c;
-            if (nc < Eout_real) saida[nc] = acc[c];
+                int32_t acc[16];
+                for (int r = 0; r < 4; r++)
+                    for (int c4 = 0; c4 < 4; c4++)
+                        acc[r * 4 + c4] = bias_pad[f + c4];
+
+                int c = 0, ki = 0, kj = 0;
+
+                for (int kg0 = 0; kg0 < K_pad; kg0 += 8) {
+                    uint8_t Atile[32] = {0};
+
+                    for (int kk = 0; kk < 8; kk++) {
+                        int kg = kg0 + kk;
+                        if (kg < K_real) {
+                            for (int r = 0; r < 4; r++)
+                                Atile[r * 8 + kk] = entrada[c * HW + (i + ki) * W + (jj[r] + kj)];
+                        }
+                        kj++;
+                        if (kj == K) { kj = 0; ki++; if (ki == K) { ki = 0; c++; } }
+                    }
+
+                    int tile_k = kg0 >> 3;
+                    const int8_t *B = pesos_tiles + ((tile_n * num_tiles_k + tile_k) * 32);
+
+                    tile4x8x4_us(Atile, B, acc);
+                }
+
+                for (int r = 0; r < 4; r++) {
+                    if (j + r >= W_out) break;
+                    int mg = i * W_out + (j + r);
+                    for (int c4 = 0; c4 < 4; c4++) {
+                        if (f + c4 < C_out_real)
+                            saida[(f + c4) * (H_out * W_out) + mg] = acc[r * 4 + c4];
+                    }
+                }
+            }
         }
     }
 }
 
-static int8_t  conv1_w_pad[CONV1_K_PAD * CONV1_F_PAD];
-static int32_t conv1_b_pad[CONV1_F_PAD];
-static int conv1_pad_ok = 0;
-static void conv1_preparar_pad(void) {
-    if (conv1_pad_ok) return;
-    memset(conv1_w_pad, 0, sizeof(conv1_w_pad));
-    memset(conv1_b_pad, 0, sizeof(conv1_b_pad));
-    for (int c = 0; c < IMG_C; c++)
-        for (int ki = 0; ki < CONV1_K; ki++)
-            for (int kj = 0; kj < CONV1_K; kj++) {
-                int kg = c * (CONV1_K * CONV1_K) + ki * CONV1_K + kj;
-                int base = ((ki * CONV1_K + kj) * IMG_C + c) * CONV1_F;
-                for (int f = 0; f < CONV1_F; f++)
-                    conv1_w_pad[kg * CONV1_F_PAD + f] = conv1_w_int8[base + f];
-            }
-    for (int f = 0; f < CONV1_F; f++) conv1_b_pad[f] = conv1_b_int32[f];
-    conv1_pad_ok = 1;
-}
+static void dense_ime(const uint8_t *x, int Ein, int Eout,
+                      const int8_t *pesos_tiles, const int32_t *bias,
+                      int32_t *saida) {
+    int num_tiles_k = Ein >> 3;
 
-static int8_t conv2_w_pad[CONV2_K_PAD * CONV2_F];
-static int conv2_pad_ok = 0;
-static void conv2_preparar_pad(void) {
-    if (conv2_pad_ok) return;
-    memset(conv2_w_pad, 0, sizeof(conv2_w_pad));
-    for (int c = 0; c < CONV1_F; c++)
-        for (int ki = 0; ki < CONV2_K; ki++)
-            for (int kj = 0; kj < CONV2_K; kj++) {
-                int kg = c * (CONV2_K * CONV2_K) + ki * CONV2_K + kj;
-                int base = ((ki * CONV2_K + kj) * CONV1_F + c) * CONV2_F;
-                for (int f = 0; f < CONV2_F; f++)
-                    conv2_w_pad[kg * CONV2_F + f] = conv2_w_int8[base + f];
-            }
-    conv2_pad_ok = 1;
-}
+    for (int n = 0; n < Eout; n += 4) {
+        int tile_n = n >> 2;
 
-static int8_t conv3_w_pad[CONV3_K_REAL * CONV3_F];
-static int conv3_pad_ok = 0;
-static void conv3_preparar_pad(void) {
-    if (conv3_pad_ok) return;
-    for (int c = 0; c < CONV2_F; c++)
-        for (int ki = 0; ki < CONV3_K; ki++)
-            for (int kj = 0; kj < CONV3_K; kj++) {
-                int kg = c * (CONV3_K * CONV3_K) + ki * CONV3_K + kj;
-                int base = ((ki * CONV3_K + kj) * CONV2_F + c) * CONV3_F;
-                for (int f = 0; f < CONV3_F; f++)
-                    conv3_w_pad[kg * CONV3_F + f] = conv3_w_int8[base + f];
-            }
-    conv3_pad_ok = 1;
-}
+        int32_t acc[16] = {0};
+        acc[0] = bias[n];
+        acc[1] = bias[n + 1];
+        acc[2] = bias[n + 2];
+        acc[3] = bias[n + 3];
 
-static int8_t  output_w_pad[OUTPUT_EIN_PAD * OUTPUT_EOUT_PAD];
-static int32_t output_b_pad[OUTPUT_EOUT_PAD];
-static int output_pad_ok = 0;
-static void output_preparar_pad(void) {
-    if (output_pad_ok) return;
-    memset(output_w_pad, 0, sizeof(output_w_pad));
-    memset(output_b_pad, 0, sizeof(output_b_pad));
-    for (int k = 0; k < DENSE1_OUT; k++)
-        for (int n = 0; n < OUTPUT_SIZE; n++)
-            output_w_pad[k * OUTPUT_EOUT_PAD + n] = output_w_int8[k * OUTPUT_SIZE + n];
-    for (int n = 0; n < OUTPUT_SIZE; n++) output_b_pad[n] = output_b_int32[n];
-    output_pad_ok = 1;
-}
+        uint8_t Atile[32];
 
-static void relu_int32(int32_t *dados, int n) {
-    for (int i = 0; i < n; i++)
-        if (dados[i] < 0) dados[i] = 0;
+        for (int k = 0; k < Ein; k += 8) {
+            memcpy(Atile,      x + k, 8);
+            memcpy(Atile + 8,  x + k, 8);
+            memcpy(Atile + 16, x + k, 8);
+            memcpy(Atile + 24, x + k, 8);
+
+            int tile_k = k >> 3;
+            const int8_t *B = pesos_tiles + ((tile_n * num_tiles_k + tile_k) * 32);
+
+            tile4x8x4_us(Atile, B, acc);
+        }
+
+        saida[n]     = acc[0];
+        saida[n + 1] = acc[1];
+        saida[n + 2] = acc[2];
+        saida[n + 3] = acc[3];
+    }
 }
 
 static void average_pooling_2x2_int32(const int32_t *entrada, int H, int W, int C,
                                       int32_t *saida) {
-    int H_out = H / 2;
-    int W_out = W / 2;
+    int H_out = H >> 1, W_out = W >> 1;
     for (int c = 0; c < C; c++) {
         for (int i = 0; i < H_out; i++) {
             for (int j = 0; j < W_out; j++) {
@@ -256,32 +197,34 @@ static void average_pooling_2x2_int32(const int32_t *entrada, int H, int W, int 
                 for (int pi = 0; pi < 2; pi++)
                     for (int pj = 0; pj < 2; pj++)
                         soma += entrada[c * (H * W) + (2*i + pi) * W + (2*j + pj)];
-                saida[c * (H_out * W_out) + i * W_out + j] = (soma + 2) / 4;
+                saida[c * (H_out * W_out) + i * W_out + j] = (soma + 2) >> 2;
             }
         }
     }
 }
 
-static void requantizar_por_canal(const int32_t *entrada, int n,
+static void requantizar_por_canal(const int32_t *entrada, int H, int W,
                                   const float *escala_peso, int n_canais,
                                   float escala_entrada, float escala_ativ_saida,
                                   uint8_t *saida) {
-    int elementos_por_canal = n / n_canais;
-    for (int i = 0; i < n; i++) {
-        int canal = i / elementos_por_canal;
-        float fator = (escala_entrada * escala_peso[canal]) / escala_ativ_saida;
-        float val = (float)entrada[i] * fator;
-        int32_t arred = (int32_t)(val + 0.5f);
-        if (arred < 0) arred = 0;
-        if (arred > 255) arred = 255;
-        saida[i] = (uint8_t)arred;
+    int plano = H * W;
+    for (int c = 0; c < n_canais; c++) {
+        float fator = (escala_entrada * escala_peso[c]) / escala_ativ_saida;
+        int offset = c * plano;
+        for (int i = 0; i < plano; i++) {
+            int idx = offset + i;
+            float val = (float)entrada[idx] * fator;
+            int32_t arred = (int32_t)(val + 0.5f);
+            if (arred < 0) arred = 0;
+            if (arred > 255) arred = 255;
+            saida[idx] = (uint8_t)arred;
+        }
     }
 }
 
 static void softmax(float *x, int n) {
     float max = x[0];
     for (int i = 1; i < n; i++) if (x[i] > max) max = x[i];
-
     float soma = 0.0f;
     for (int i = 0; i < n; i++) {
         x[i] = expf(x[i] - max);
@@ -292,12 +235,6 @@ static void softmax(float *x, int n) {
 
 void inferencia_int8(const uint8_t *img_uint8, float *probs,
                      TemposCamadasInt8 *tempos, int aplicar_softmax) {
-    conv1_preparar_pad();
-    conv2_preparar_pad();
-    conv3_preparar_pad();
-    output_preparar_pad();
-
-    uint8_t img_u8[IMG_H * IMG_W];
     int32_t conv1_out[CONV1_F * CONV1_OUT_H * CONV1_OUT_W];
     int32_t pool1_i32[CONV1_F * POOL1_H * POOL1_W];
     uint8_t pool1_u8[CONV1_F * POOL1_H * POOL1_W];
@@ -313,80 +250,78 @@ void inferencia_int8(const uint8_t *img_uint8, float *probs,
     uint8_t dense1_u8[DENSE1_OUT];
 
     int32_t output_i32[OUTPUT_SIZE];
-    float output_float[OUTPUT_SIZE];
 
     struct timespec t1, t2;
 
-    memcpy(img_u8, img_uint8, IMG_H * IMG_W);
-
+    //conv1
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    conv2d_ime_padded(img_u8, IMG_H, IMG_W, CONV1_K,
-                      CONV1_F, CONV1_F_PAD, CONV1_K_REAL, CONV1_K_PAD,
-                      conv1_w_pad, conv1_b_pad, conv1_out);
+    conv2d_ime(img_uint8, IMG_H, IMG_W, CONV1_K,
+               CONV1_F, CONV1_F_PAD, CONV1_K_REAL, CONV1_K_PAD,
+               int8_conv1_w_ime_tiles, int8_conv1_b_ime, conv1_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->conv1_us = diff_us(t1, t2);
 
-    relu_int32(conv1_out, CONV1_F * CONV1_OUT_H * CONV1_OUT_W);
     average_pooling_2x2_int32(conv1_out, CONV1_OUT_H, CONV1_OUT_W, CONV1_F, pool1_i32);
-    requantizar_por_canal(pool1_i32, CONV1_F * POOL1_H * POOL1_W,
-                          conv1_escala, CONV1_F,
-                          1.0f/255.0f, CONV1_ESCALA_ATIV_ESCALA, pool1_u8);
+    requantizar_por_canal(pool1_i32, POOL1_H, POOL1_W,
+                          int8_conv1_escala, CONV1_F,
+                          1.0f/255.0f, INT8_CONV1_ESCALA_ATIV, pool1_u8);
 
+    //conv2
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    conv2d_ime_padded(pool1_u8, POOL1_H, POOL1_W, CONV2_K,
-                      CONV2_F, CONV2_F, CONV2_K_REAL, CONV2_K_PAD,
-                      conv2_w_pad, conv2_b_int32, conv2_out);
+    conv2d_ime(pool1_u8, POOL1_H, POOL1_W, CONV2_K,
+               CONV2_F, CONV2_F, CONV2_K_REAL, CONV2_K_PAD,
+               int8_conv2_w_ime_tiles, int8_conv2_b_ime, conv2_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->conv2_us = diff_us(t1, t2);
 
-    relu_int32(conv2_out, CONV2_F * CONV2_OUT_H * CONV2_OUT_W);
     average_pooling_2x2_int32(conv2_out, CONV2_OUT_H, CONV2_OUT_W, CONV2_F, pool2_i32);
-    requantizar_por_canal(pool2_i32, CONV2_F * POOL2_H * POOL2_W,
-                          conv2_escala, CONV2_F,
-                          CONV1_ESCALA_ATIV_ESCALA, CONV2_ESCALA_ATIV_ESCALA, pool2_u8);
+    requantizar_por_canal(pool2_i32, POOL2_H, POOL2_W,
+                          int8_conv2_escala, CONV2_F,
+                          INT8_CONV1_ESCALA_ATIV, INT8_CONV2_ESCALA_ATIV, pool2_u8);
 
+    //conv3
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    conv2d_ime_padded(pool2_u8, POOL2_H, POOL2_W, CONV3_K,
-                      CONV3_F, CONV3_F, CONV3_K_REAL, CONV3_K_REAL,
-                      conv3_w_pad, conv3_b_int32, conv3_out);
+    conv2d_ime(pool2_u8, POOL2_H, POOL2_W, CONV3_K,
+               CONV3_F, CONV3_F, CONV3_K_REAL, CONV3_K_REAL,
+               int8_conv3_w_ime_tiles, int8_conv3_b_ime, conv3_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->conv3_us = diff_us(t1, t2);
 
-    relu_int32(conv3_out, CONV3_F * CONV3_OUT_H * CONV3_OUT_W);
-    requantizar_por_canal(conv3_out, FLAT_SIZE,
-                          conv3_escala, CONV3_F,
-                          CONV2_ESCALA_ATIV_ESCALA, CONV3_ESCALA_ATIV_ESCALA, conv3_u8);
+    requantizar_por_canal(conv3_out, CONV3_OUT_H, CONV3_OUT_W,
+                          int8_conv3_escala, CONV3_F,
+                          INT8_CONV2_ESCALA_ATIV, INT8_CONV3_ESCALA_ATIV, conv3_u8);
 
+    //dense1
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    densa_ime_padded(conv3_u8, FLAT_SIZE, FLAT_SIZE, DENSE1_OUT, DENSE1_OUT,
-                     dense1_w_int8, dense1_b_int32, dense1_out);
+    dense_ime(conv3_u8, FLAT_SIZE, DENSE1_OUT,
+              int8_dense1_w_ime_tiles, int8_dense1_b_ime, dense1_out);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->dense1_us = diff_us(t1, t2);
 
-    relu_int32(dense1_out, DENSE1_OUT);
-    requantizar_por_canal(dense1_out, DENSE1_OUT,
-                          dense1_escala, DENSE1_OUT,
-                          CONV3_ESCALA_ATIV_ESCALA, DENSE1_ESCALA_ATIV_ESCALA, dense1_u8);
+    requantizar_por_canal(dense1_out, 1, 1,
+                          int8_dense1_escala, DENSE1_OUT,
+                          INT8_CONV3_ESCALA_ATIV, INT8_DENSE1_ESCALA_ATIV, dense1_u8);
 
+    //output
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-    densa_ime_padded(dense1_u8, DENSE1_OUT, OUTPUT_EIN_PAD, OUTPUT_SIZE, OUTPUT_EOUT_PAD,
-                     output_w_pad, output_b_pad, output_i32);
+    for (int j = 0; j < OUTPUT_SIZE; j++) {
+        int32_t soma = int8_output_b[j];
+        for (int i = 0; i < DENSE1_OUT; i++)
+            soma += (int32_t)dense1_u8[i] * int8_output_w[i * OUTPUT_SIZE + j];
+        output_i32[j] = soma;
+    }
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->output_us = diff_us(t1, t2);
 
-    for (int i = 0; i < OUTPUT_SIZE; i++) {
-        output_float[i] = (float)output_i32[i] *
-                          (DENSE1_ESCALA_ATIV_ESCALA * output_escala[i]);
-    }
+    for (int i = 0; i < OUTPUT_SIZE; i++)
+        probs[i] = (float)output_i32[i] * (INT8_DENSE1_ESCALA_ATIV * int8_output_escala[i]);
 
     if (aplicar_softmax) {
         clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t1);
-        softmax(output_float, OUTPUT_SIZE);
+        softmax(probs, OUTPUT_SIZE);
         clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
         tempos->softmax_us = diff_us(t1, t2);
     } else {
         tempos->softmax_us = 0.0;
     }
-
-    for (int i = 0; i < OUTPUT_SIZE; i++) probs[i] = output_float[i];
 }
