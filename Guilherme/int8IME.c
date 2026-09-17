@@ -203,6 +203,11 @@ static void average_pooling_2x2_int32(const int32_t *entrada, int H, int W, int 
     }
 }
 
+static void relu_int32(int32_t *dados, int n) {
+    for (int i = 0; i < n; i++)
+        if (dados[i] < 0) dados[i] = 0;
+}
+
 static void requantizar_por_canal(const int32_t *entrada, int H, int W,
                                   const float *escala_peso, int n_canais,
                                   float escala_entrada, float escala_ativ_saida,
@@ -258,6 +263,7 @@ void inferencia_int8(const uint8_t *img_uint8, float *probs,
     conv2d_ime(img_uint8, IMG_H, IMG_W, CONV1_K,
                CONV1_F, CONV1_F_PAD, CONV1_K_REAL, CONV1_K_PAD,
                int8_conv1_w_ime_tiles, int8_conv1_b_ime, conv1_out);
+    relu_int32(conv1_out, CONV1_F * CONV1_OUT_H * CONV1_OUT_W);    
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->conv1_us = diff_us(t1, t2);
 
@@ -271,6 +277,7 @@ void inferencia_int8(const uint8_t *img_uint8, float *probs,
     conv2d_ime(pool1_u8, POOL1_H, POOL1_W, CONV2_K,
                CONV2_F, CONV2_F, CONV2_K_REAL, CONV2_K_PAD,
                int8_conv2_w_ime_tiles, int8_conv2_b_ime, conv2_out);
+    relu_int32(conv2_out, CONV2_F * CONV2_OUT_H * CONV2_OUT_W);
     clock_gettime(CLOCK_PROCESS_CPUTIME_ID, &t2);
     tempos->conv2_us = diff_us(t1, t2);
 
